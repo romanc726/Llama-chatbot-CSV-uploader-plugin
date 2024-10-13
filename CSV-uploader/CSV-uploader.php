@@ -2,7 +2,7 @@
 /*
 Plugin Name: CSV Uploader and Monitor
 Description: Uploads CSV files and stores in questions table. Monitors answers folder for new files and stores in answers table.
-Version: 1.0
+Version: 1.1
 Author: Roman Cherkasov
 */
 
@@ -10,33 +10,24 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly
 }
 
-// Create the questions and answers tables on plugin activation
+// Create the questions table on plugin activation
 function csv_uploader_create_tables() {
     global $wpdb;
 
     $charset_collate = $wpdb->get_charset_collate();
 
-    // Questions table
+    // Questions table with ID, question, and status fields
     $table_name_questions = $wpdb->prefix . 'questions';
     $sql_questions = "CREATE TABLE $table_name_questions (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
-        question_text text NOT NULL,
-        date_added datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
-        PRIMARY KEY (id)
-    ) $charset_collate;";
-
-    // Answers table
-    $table_name_answers = $wpdb->prefix . 'answers';
-    $sql_answers = "CREATE TABLE $table_name_answers (
-        id mediumint(9) NOT NULL AUTO_INCREMENT,
-        answer_text text NOT NULL,
+        question text NOT NULL,
+        status varchar(50) NOT NULL,
         date_added datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
         PRIMARY KEY (id)
     ) $charset_collate;";
 
     require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
     dbDelta($sql_questions);
-    dbDelta($sql_answers);
 }
 register_activation_hook(__FILE__, 'csv_uploader_create_tables');
 
@@ -93,11 +84,23 @@ function csv_uploader_store_csv_in_db($file_path, $table_name) {
 
     if (($handle = fopen($file_path, "r")) !== FALSE) {
         while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
-            if ($table_name == 'questions') {
-                $wpdb->insert($wpdb->prefix . 'questions', ['question_text' => sanitize_text_field($data[0])]);
-            } elseif ($table_name == 'answers') {
-                $wpdb->insert($wpdb->prefix . 'answers', ['answer_text' => sanitize_text_field($data[0])]);
-            }
+            // Expecting the CSV to have 3 columns: ID, question, status
+            if (count($data) < 3) continue;
+
+            $id = sanitize_text_field($data[0]);
+            $question = sanitize_text_field($data[1]);
+            $status = sanitize_text_field($data[2]);
+
+            // Insert into questions table
+            $wpdb->replace(
+                $wpdb->prefix . $table_name,
+                array(
+                    'id' => $id,
+                    'question' => $question,
+                    'status' => $status,
+                ),
+                array('%d', '%s', '%s')
+            );
         }
         fclose($handle);
     }
@@ -142,5 +145,41 @@ function csv_uploader_deactivation() {
     wp_clear_scheduled_hook('csv_uploader_monitor_answers_event');
 }
 register_deactivation_hook(__FILE__, 'csv_uploader_deactivation');
+
+// Archive Question CSV in the same structure
+function csv_uploader_archive_questions() {
+    global $wpdb;
+
+    $questions = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}questions");
+
+    if ($questions) {
+        // Set up the folder and file name for the archive
+        $upload_dir = WP_CONTENT_DIR . '/questions/';
+        if (!file_exists($upload_dir)) {
+            mkdir($upload_dir, 0755, true);
+        }
+
+        // Create filename question-000000001.csv format
+        $files = glob($upload_dir . 'question-*.csv');
+        $next_file_number = count($files) + 1;
+        $file_name = sprintf('question-%09d.csv', $next_file_number);
+
+        $file_path = $upload_dir . $file_name;
+        
+        // Create CSV file
+        $handle = fopen($file_path, 'w');
+
+        // Write the header
+        fputcsv($handle, ['ID', 'Question', 'Status']);
+
+        // Write each question record to CSV
+        foreach ($questions as $question) {
+            fputcsv($handle, [$question->id, $question->question, $question->status]);
+        }
+
+        fclose($handle);
+    }
+}
+add_action('wp_footer', 'csv_uploader_archive_questions'); // You can change this hook to a more appropriate one
 
 ?>
