@@ -89,10 +89,10 @@ function csv_uploader_handle_file_upload($file) {
     csv_uploader_store_csv_in_db($file_path, 'questions');
 }
 
-// Store CSV content in the database
+// Store CSV content in the specified table (questions or answers)
 function csv_uploader_store_csv_in_db($file_path, $table_name) {
     global $wpdb;
-    csv_uploader_enqueue_files_for_js($file_path);
+
     if (($handle = fopen($file_path, "r")) !== FALSE) {
         while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
             // For answers table, assume CSV has ID, answer, and status fields
@@ -116,7 +116,6 @@ function csv_uploader_store_csv_in_db($file_path, $table_name) {
         fclose($handle);
     }
 }
-
 // Monitor answers folder for new CSV files
 function csv_uploader_monitor_answers_folder() {
     $answer_folder = WP_CONTENT_DIR . '/answers/';
@@ -125,46 +124,24 @@ function csv_uploader_monitor_answers_folder() {
         mkdir($answer_folder, 0755, true);
     }
 
-    // Get list of already processed files and their modification times
+    // Get list of already processed files
     $processed_files = get_option('csv_uploader_processed_files', []);
 
-    // Get all CSV files in the answers folder
     $files = glob($answer_folder . 'answer-*.csv');
-    $files_for_js = [];
 
     foreach ($files as $file) {
-        $file_modified_time = filemtime($file); // Get file modification time
-        
-        // Check if the file is either new or has been modified since last process
-        if (!isset($processed_files[$file]) || $processed_files[$file] < $file_modified_time) {
-            $files_for_js[] = $file;
-
-            // Process new or updated file and store in DB
+        if (!in_array($file, $processed_files)) {
+            // Process new file and store in DB
             csv_uploader_store_csv_in_db($file, 'answers');
 
-            // Mark file as processed with its modification time
-            $processed_files[$file] = $file_modified_time;
+            // Mark file as processed
+            $processed_files[] = $file;
         }
     }
 
     // Update the processed files list
     update_option('csv_uploader_processed_files', $processed_files);
-
-    // Pass files to JavaScript for debugging
-    csv_uploader_enqueue_files_for_js($files_for_js);
 }
-
-add_action('init', 'csv_uploader_monitor_answers_folder');
-
-// Enqueue JavaScript and pass $files and $file data to it
-function csv_uploader_enqueue_files_for_js($files) {
-    wp_enqueue_script('csv-uploader-debug', plugins_url('./debug.js', __FILE__), array(), null, true);
-
-    // Pass the $files data to the JavaScript
-    wp_localize_script('csv-uploader-debug', 'csvUploaderFiles', array('files' => $files));
-}
-
-
 add_action('init', 'csv_uploader_monitor_answers_folder');
 
 // Schedule the folder monitoring to run periodically
