@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: CSV Uploader and Monitor
-Description: Uploads CSV files and stores them in the questions table. Monitors answers folder for new files and stores them in the answers table.
-Version: 6.3
+Description: Uploads CSV files and stores in questions table. Monitors answers folder for new files and stores in answers table.
+Version: 1.0
 Author: Roman Cherkasov
 */
 
@@ -16,22 +16,22 @@ function csv_uploader_create_tables() {
 
     $charset_collate = $wpdb->get_charset_collate();
 
-    // Questions table with ID, question, and status fields
+    // Questions table
     $table_name_questions = $wpdb->prefix . 'questions';
     $sql_questions = "CREATE TABLE $table_name_questions (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         question text NOT NULL,
-        status varchar(50) NOT NULL,
+        answered text NOT NULL,
         date_added datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
         PRIMARY KEY (id)
     ) $charset_collate;";
 
-    // Answers table with ID, answer, and status fields
+    // Answers table
     $table_name_answers = $wpdb->prefix . 'answers';
     $sql_answers = "CREATE TABLE $table_name_answers (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         answer text NOT NULL,
-        status varchar(50) NOT NULL,
+        answered text NOT NULL,
         date_added datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
         PRIMARY KEY (id)
     ) $charset_collate;";
@@ -48,7 +48,7 @@ function csv_uploader_menu() {
 }
 add_action('admin_menu', 'csv_uploader_menu');
 
-// Display the upload form and handle file uploads for questions
+// Display the upload form and handle file uploads
 function csv_uploader_page() {
     if (isset($_POST['submit']) && !empty($_FILES['csv_file'])) {
         csv_uploader_handle_file_upload($_FILES['csv_file']);
@@ -65,7 +65,7 @@ function csv_uploader_page() {
     <?php
 }
 
-// Handle CSV file upload for questions
+// Handle CSV file upload
 function csv_uploader_handle_file_upload($file) {
     if ($file['type'] !== 'text/csv') {
         wp_die('Only CSV files are allowed.');
@@ -85,11 +85,38 @@ function csv_uploader_handle_file_upload($file) {
     $file_path = $upload_dir . $file_name;
     move_uploaded_file($file['tmp_name'], $file_path);
 
-    // Store contents of CSV in the questions table
+    // Store contents of CSV in the database
     csv_uploader_store_csv_in_db($file_path, 'questions');
 }
 
-// Monitor the answers folder for new CSV files and store them in the answers table
+// Store CSV content in the specified table (questions or answers)
+function csv_uploader_store_csv_in_db($file_path, $table_name) {
+    global $wpdb;
+
+    if (($handle = fopen($file_path, "r")) !== FALSE) {
+        while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+            // For answers table, assume CSV has ID, answer, and status fields
+            if (count($data) < 3) continue;
+
+            $id = sanitize_text_field($data[0]);
+            $content = sanitize_text_field($data[1]); // Can be question or answer
+            $answered = sanitize_text_field($data[2]);
+
+            // Insert into the specified table (questions or answers)
+            $wpdb->replace(
+                $wpdb->prefix . $table_name,
+                array(
+                    'id' => $id,
+                    $table_name === 'questions' ? 'question' : 'answer' => $content,
+                    'answered' => $answered,
+                ),
+                array('%d', '%s', '%s')
+            );
+        }
+        fclose($handle);
+    }
+}
+// Monitor answers folder for new CSV files
 function csv_uploader_monitor_answers_folder() {
     $answer_folder = WP_CONTENT_DIR . '/answers/';
 
@@ -100,85 +127,30 @@ function csv_uploader_monitor_answers_folder() {
     // Get list of already processed files
     $processed_files = get_option('csv_uploader_processed_files', []);
 
-    // Fetch files with full path
     $files = glob($answer_folder . 'answer-*.csv');
 
     foreach ($files as $file) {
-        // Log each file being checked
-        error_log("Checking file: " . $file);
-
         if (!in_array($file, $processed_files)) {
-            // Log new file being processed
-            error_log("Processing new file: " . $file);
+            // Process new file and store in DB
+            csv_uploader_store_csv_in_db($file, 'answers');
 
-            // Process the new file and store in answers table
-            $result = csv_uploader_store_csv_in_db($file, 'answers');
-
-            // Log the result of the file processing
-            if ($result === true) {
-                // Mark file as processed
-                $processed_files[] = $file;
-            } else {
-                error_log("Error processing file: " . $file);
-            }
-        } else {
-            error_log("File already processed: " . $file);
+            // Mark file as processed
+            $processed_files[] = $file;
         }
     }
 
     // Update the processed files list
     update_option('csv_uploader_processed_files', $processed_files);
 }
+add_action('init', 'csv_uploader_monitor_answers_folder');
 
-// Store CSV content in the database (with logging)
-function csv_uploader_store_csv_in_db($file_path, $table_name) {
-    global $wpdb;
-
-    // Log the file path being processed
-    error_log("Opening file: " . $file_path);
-
-    if (($handle = fopen($file_path, "r")) !== FALSE) {
-        while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
-            // Expecting the CSV to have 3 columns: ID, answer, status
-            if (count($data) < 3) {
-                error_log("Invalid CSV format in file: " . $file_path);
-                continue; // Skip rows that don't match the format
-            }
-
-            $id = sanitize_text_field($data[0]);
-            $content = sanitize_text_field($data[1]); // Can be question or answer
-            $status = sanitize_text_field($data[2]);
-
-            // Log the data being inserted
-            error_log("Inserting data: ID = $id, Content = $content, Status = $status");
-
-            // Insert into the specified table (questions or answers)
-            $wpdb->replace(
-                $wpdb->prefix . $table_name,
-                array(
-                    'id' => $id,
-                    $table_name === 'questions' ? 'question' : 'answer' => $content,
-                    'status' => $status,
-                ),
-                array('%d', '%s', '%s')
-            );
-        }
-        fclose($handle);
-        return true;
-    } else {
-        // Log file open failure
-        error_log("Failed to open file: " . $file_path);
-        return false;
-    }
-}
-
-// Schedule the folder monitoring to run every minute
+// Schedule the folder monitoring to run periodically
 if (!wp_next_scheduled('csv_uploader_monitor_answers_event')) {
-    wp_schedule_event(time(), 'minute', 'csv_uploader_monitor_answers_event');
+    wp_schedule_event(time(), 'hourly', 'csv_uploader_monitor_answers_event');
 }
 add_action('csv_uploader_monitor_answers_event', 'csv_uploader_monitor_answers_folder');
 
-// Clear scheduled events on plugin deactivation
+// Deactivation hook to clear scheduled events
 function csv_uploader_deactivation() {
     wp_clear_scheduled_hook('csv_uploader_monitor_answers_event');
 }
